@@ -441,20 +441,6 @@
           </p>
         </details>
 
-        <details>
-          <summary>Graphics</summary>
-          <div class="seg" id="qSeg">
-            <button data-v="low">Low</button>
-            <button data-v="med">Medium</button>
-            <button data-v="high">High</button>
-          </div>
-          <p class="hint">
-            Use Low if the picture stutters inside the headset – a smooth frame
-            rate matters more than detail in VR. Resolution also lowers itself
-            automatically if the phone can't keep up.
-          </p>
-        </details>
-
         <p class="warn">
           Play in a clear, safe space with someone nearby. Contains flashing
           lights, loud sounds and jumpscares – not for people with
@@ -547,7 +533,7 @@
         lens: 63,
         dist: 1,
         voff: 0,
-        quality: isMobile ? "med" : "high",
+        quality: "high",
         sens: 1,
         stride: 0.65,
         lookWalk: true,
@@ -558,7 +544,7 @@
         Object.assign(S, JSON.parse(localStorage.getItem("bb_vr_v19") || "{}"));
       } catch (e) {}
       if (!PRESETS[S.preset]) S.preset = "vrbox";
-      if (!QUAL[S.quality]) S.quality = DEF.quality;
+      S.quality = "high"; // single graphics setting
       const save = () => {
         try {
           localStorage.setItem("bb_vr_v19", JSON.stringify(S));
@@ -2706,7 +2692,6 @@
         }, 8000);
       }
       function wrapWorld(s) {
-        safe.z += s;
         P.z += s;
         B.z += s;
         stalker.position.z += s;
@@ -2969,7 +2954,6 @@
         gapHint = false,
         nextCreak = 4,
         nextVoice = 30;
-      const safe = { x: 0, z: 6 };
       function doJump() {
         if (air || fallS || !started || ended || menuOn || calib) return;
         const f = fwd();
@@ -3026,16 +3010,18 @@
         air = false;
         pvy = coyote = 0;
         rig.rotation.x = rig.rotation.z = 0;
-        let z = safe.z + 0.6;
-        if (!supported(safe.x, z)) z = safe.z;
-        const ox = B.x - P.x,
+        const z = 6, // back on the cliff platform where the bridge starts
+          ox = B.x - P.x,
           oz = B.z - P.z; // WebXR room-scale offset
-        P.x = safe.x - ox;
+        P.x = -ox;
         P.z = z - oz;
-        B.x = safe.x;
+        B.x = 0;
         B.z = z;
-        pyAbs = deckY(z);
-        if (stk.on) stalker.position.set(0, 0, Math.min(z + 12, 14));
+        pyAbs = 0;
+        vel = moveRem = 0;
+        autoW = false;
+        recenter(); // face the bridge again
+        if (stk.on) stalker.position.set(0, 0, 14);
         MS.to = 0;
         MS.k = 1 / 1.6;
         MS.hideAt = 0;
@@ -3174,18 +3160,11 @@
       };
       function syncMode() {
         [...$("modeSeg").children].forEach((b) => b.classList.toggle("on", b.dataset.v === S.mode));
-        [...$("qSeg").children].forEach((b) => b.classList.toggle("on", b.dataset.v === S.quality));
         $("how").innerHTML = howTxt[S.mode];
       }
       $("modeSeg").onclick = (e) => {
         if (!e.target.dataset.v) return;
         S.mode = e.target.dataset.v;
-        save();
-        syncMode();
-      };
-      $("qSeg").onclick = (e) => {
-        if (!e.target.dataset.v) return;
-        S.quality = e.target.dataset.v;
         save();
         syncMode();
       };
@@ -3543,10 +3522,6 @@
           } else {
             coyote = 0;
             pyAbs = gnd;
-            if (!gz && supported(B.x, B.z + 0.35) && supported(B.x, B.z - 0.35)) {
-              safe.x = B.x;
-              safe.z = B.z;
-            }
             if (!gapHint && B.z < 0 && !supported(B.x, B.z - 2.2) && !supported(B.x, B.z - 1.8)) {
               gapHint = true;
               toast(S.hop ? "Gap ahead – hop or double-tap to jump" : "Gap ahead – double-tap to jump", 3500);
@@ -3807,7 +3782,7 @@
           perfA += raw;
           if (++perfN >= 90) {
             const avg = perfA / perfN;
-            if (avg > 1 / 40 && dyn > 0.55 && now - dynT > 3000) {
+            if (avg > 1 / 40 && dyn > 0.7 && now - dynT > 3000) {
               dyn *= 0.85;
               dynT = now;
             } else if (avg < 1 / 57 && dyn < 1 && now - dynT > 8000) {

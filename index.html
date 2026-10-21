@@ -412,6 +412,10 @@
           <button data-v="vr">VR headset</button>
           <button data-v="mono">No headset</button>
         </div>
+        <div class="seg" id="jumpSeg">
+          <button data-v="on">Jump the gaps</button>
+          <button data-v="off">No jumping</button>
+        </div>
         <p class="how" id="how"></p>
         <button id="go">Begin</button>
         <button id="xrBtn" class="btn2" hidden>Enter VR with WebXR</button>
@@ -464,7 +468,7 @@
             >Step length <output id="o_stride"></output
             ><input id="stride" type="range" min="0.3" max="1.2" step="0.05"
           /></label>
-          <label class="chk"
+          <label class="chk" id="hopRow"
             ><input type="checkbox" id="hop" /> Jump by actually hopping – the
             motion sensor feels it. A small hop on the spot is plenty.</label
           >
@@ -599,6 +603,7 @@
         stride: 0.65,
         lookWalk: true,
         hop: true,
+        jump: true,
         lookUp: true,
         autoStraight: true,
         name: "",
@@ -1391,6 +1396,7 @@
       const FOOT = 0.13;
       function supported(x, z) {
         if (z > 0.62) return Math.abs(x) < 18; // solid cliff
+        if (!S.jump && Math.abs(x) < 0.32 && inHole(((-z % PER) + PER) % PER, 0.35)) return true; // boarded over
         const k0 = Math.round(-z / 0.5);
         for (let k = k0 - 1; k <= k0 + 1; k++) {
           const L = slotMap.get(k);
@@ -1530,6 +1536,17 @@
       const rockGeo = merge(rockParts);
       rockGeo.computeVertexNormals();
 
+      // makeshift boards laid across the holes – used when jumping is turned off
+      const boardParts = [];
+      {
+        const rb = mulberry32(77);
+        for (const [a, b] of HOLES)
+          for (const sx of [-1, 1]) {
+            const len = b - a + 0.75;
+            boardParts.push(place(tbox(0.26, 0.05, len, rb), sx * 0.17 + (rb() - 0.5) * 0.04, 0.056, -(a + b) / 2 + (rb() - 0.5) * 0.1, (rb() - 0.5) * 0.02, (rb() - 0.5) * 0.06, sx * 0.03));
+          }
+      }
+      const boardGeo = merge(boardParts);
       const perMeshes = [];
       for (let k = 0; k < NPER; k++) {
         const o = -PER * k;
@@ -1548,6 +1565,7 @@
         add(ironGeo, ironM, false, false);
         add(glassGeo, glassM, false, false);
         add(rockGeo, rockM, false, false);
+        add(boardGeo, timberM, true, true).userData.boards = true;
       }
 
       // planks hanging off the broken section, gently swinging
@@ -3498,7 +3516,7 @@
 
       /* ---- the thing under the planks (abnormal + falling + sudden movement) ---- */
       const crawler = makeFig();
-      const CRL = { st: -1, t: 0, zc: 0, look: 0, tapUntil: 0 };
+      const CRL = { st: -1, t: 0, zc: 0, x: 0, look: 0, tapUntil: 0 };
       function startCrawl() {
         if (B.z > 0) return false;
         const m = ((-B.z % PER) + PER) % PER;
@@ -3511,7 +3529,8 @@
         if (best == null) return false;
         CRL.zc = B.z - best;
         crawler.rotation.set(-Math.PI / 2, 0, 0); // clinging to the underside, face up, head under the hole
-        crawler.position.set(0, -0.68, CRL.zc + 1.62);
+        CRL.x = S.jump ? 0 : 0.55; // with boards over the hole, she lies beside them
+        crawler.position.set(CRL.x, -0.68, CRL.zc + 1.62);
         crawler.userData.hd.rotation.z = 0.45;
         crawler.visible = true;
         Object.assign(CRL, { st: 0, t: 0, look: 0 });
@@ -3524,7 +3543,7 @@
         if (CRL.st === 0) {
           if (R() < dt * 0.9) drip({ x: rr(-0.4, 0.4), y: -0.3, z: CRL.zc }, 0.4);
           const f = _v.set(0, 0, -1).applyQuaternion(hq),
-            d = _v2.set(-hp.x, -0.58 - hp.y, CRL.zc - hp.z).normalize();
+            d = _v2.set(CRL.x - hp.x, -0.58 - hp.y, CRL.zc - hp.z).normalize();
           CRL.look = f.dot(d) > 0.95 ? CRL.look + dt : 0;
           if (CRL.look > 0.3 || B.z - CRL.zc < 1.2 || CRL.t > 40) {
             // seen – it scuttles away under the planks… under you
@@ -4166,7 +4185,7 @@
         nextCreak = 4,
         nextVoice = 30;
       function doJump() {
-        if (air || fallS || !started || ended || menuOn || calib || nowMs() < DIR.lockUntil) return;
+        if (!S.jump || air || fallS || !started || ended || menuOn || calib || nowMs() < DIR.lockUntil) return;
         const f = fwd();
         air = true;
         pvy = 3.15; // ~0.5 m high, ~0.65 s in the air
@@ -4317,7 +4336,7 @@
         }
         for (const i of Object.keys(gpHold)) {
           if (down.has(+i)) continue;
-          if (!gpHold[i].fired && !menuOn) +i === 0 ? doJump() : toggleWalk();
+          if (!gpHold[i].fired && !menuOn) +i === 0 && S.jump ? doJump() : toggleWalk();
           delete gpHold[i];
         }
         if (fwdStick && started && !ended && !menuOn && t - SD.last > 520) registerStep(t);
@@ -4384,14 +4403,23 @@
           doJump();
         } else {
           lastTap = t;
-          tapT = setTimeout(toggleWalk, 330);
+          if (S.jump) tapT = setTimeout(toggleWalk, 330);
+          else {
+            lastTap = 0;
+            toggleWalk(); // no double-tap to wait for
+          }
         }
       });
 
       /* ================= menu ================= */
       const howTxt = {
-        vr: "1. Wear headphones and set up your headset below (once).<br>2. Tap <b>Begin</b>, slide the phone into the headset and look straight ahead.<br>3. <b>Walk in place</b> or take real steps – you move forward in the direction you look, and stop when you stop.<br>4. <b>Gaps:</b> hop on the spot (or double-tap the screen / headset button) to jump. Miss, or step off the narrow broken section, and you fall.<br>5. Steps not registering? Look down at your feet for a second, tap the headset button / screen, or press a Bluetooth remote to toggle auto-walk.<br>6. <b>Recentre</b> any time: look up at the sky for two seconds, or hold the screen, headset button or remote button for a second.",
-        mono: (isTouch ? "Move the phone or drag to look around. Walk in place holding the phone, or tap the screen to toggle auto-walk. Hop or double-tap to jump the gaps." : "Drag the mouse to look around. Hold <b>W</b> / <b>↑</b> to walk, or click to toggle auto-walk. <b>Space</b> jumps the gaps. <b>R</b> recentres.") + " Headphones strongly recommended.",
+        get vr() {
+          return "1. Wear headphones and set up your headset below (once).<br>2. Tap <b>Begin</b>, slide the phone into the headset and look straight ahead.<br>3. <b>Walk in place</b> or take real steps – you move forward in the direction you look, and stop when you stop.<br>4. " + (S.jump ? "<b>Gaps:</b> hop on the spot (or double-tap the screen / headset button) to jump. Miss, or step off the narrow broken section, and you fall." : "<b>Jumping is off:</b> the gaps are boarded over and you can't fall – just keep walking.") + "<br>5. Steps not registering? Look down at your feet for a second, tap the headset button / screen, or press a Bluetooth remote to toggle auto-walk.<br>6. <b>Recentre</b> any time: look up at the sky for two seconds, or hold the screen, headset button or remote button for a second.";
+        },
+        get mono() {
+          const j = S.jump ? (isTouch ? " Hop or double-tap to jump the gaps." : " <b>Space</b> jumps the gaps.") : " Jumping is off: gaps are boarded over and you can't fall.";
+          return (isTouch ? "Move the phone or drag to look around. Walk in place holding the phone, or tap the screen to toggle auto-walk." : "Drag the mouse to look around. Hold <b>W</b> / <b>↑</b> to walk, or click to toggle auto-walk. <b>R</b> recentres.") + j + " Headphones strongly recommended.";
+        },
       };
       function syncMode() {
         [...$("modeSeg").children].forEach((b) => b.classList.toggle("on", b.dataset.v === S.mode));
@@ -4434,6 +4462,20 @@
         save();
         computeLayout();
       };
+      // jumping on: gaps must be jumped and you can fall. Off: gaps are boarded over and you can't fall.
+      const syncJump = () => {
+        [...$("jumpSeg").children].forEach((b) => b.classList.toggle("on", (b.dataset.v === "on") === !!S.jump));
+        $("hop").disabled = !S.jump;
+        $("hopRow").style.opacity = S.jump ? 1 : 0.4;
+        syncMode();
+      };
+      $("jumpSeg").onclick = (e) => {
+        if (!e.target.dataset.v) return;
+        S.jump = e.target.dataset.v === "on";
+        save();
+        syncJump();
+      };
+      syncJump();
       $("hop").checked = !!S.hop;
       $("hop").onchange = () => {
         S.hop = $("hop").checked;
@@ -4736,10 +4778,12 @@
           B.z = P.z;
         }
         const gz = inGapZ(B.z),
-          onBridge = B.z < 0.3;
+          onBridge = B.z < (S.jump ? 0.3 : 0.65),
+          lm = ((-B.z % PER) + PER) % PER;
         if (!fallS) {
           // rope rails stop you on intact sections; the broken section and the cliff edge don't
-          const lim = !onBridge ? 3.2 : gz ? 9 : 0.95,
+          // with jumping off you're kept on the narrow planks and the boards
+          const lim = !onBridge ? 3.2 : !S.jump && gz ? 0.36 : !S.jump && B.z < 0.6 && inHole(lm, 0.35) ? 0.28 : gz ? 9 : 0.95,
             ex = cl(B.x, -lim, lim) - B.x;
           P.x += ex * Math.min(1, dt * 8);
           B.x += ex * Math.min(1, dt * 8);
@@ -4755,7 +4799,7 @@
         }
         if (P.z < -100 && !air && !fallS) wrapWorld(60);
         // ---- standing, jumping, falling ----
-        if (started && !ended && !fallS) {
+        if (started && !ended && !fallS && S.jump) {
           const gnd = deckY(B.z);
           if (air) {
             if (pvy <= 0 && pyAbs <= gnd) {
@@ -4782,7 +4826,7 @@
               toast(S.hop ? "Gap ahead – hop or double-tap to jump" : "Gap ahead – double-tap to jump", 3500);
             }
           }
-        } else if (!fallS && !air) pyAbs = deckY(B.z);
+        } else if (!fallS && !air) pyAbs = deckY(B.z) + (!S.jump && B.z < 0.6 && inHole(lm, 0) ? 0.05 : 0); // on the boards
         phase += d * 4.5;
         const sw = gz ? Math.sin(now * 0.0007) * 0.04 : 0;
         shk *= Math.exp(-dt * 3);
@@ -4871,7 +4915,7 @@
         perMeshes.forEach((ms, k) => {
           const o = -PER * k,
             v = o - PER < B.z + 45 && o > B.z - 100;
-          ms.forEach((m) => (m.visible = v));
+          ms.forEach((m) => (m.visible = v && (!m.userData.boards || !S.jump)));
         });
         // ---- lantern at the next gate ----
         const gzz = Math.max(-PER * (NPER - 1), Math.min(0, PER * Math.floor((B.z + 4) / PER)));

@@ -330,6 +330,23 @@
         height: 18px;
         flex: none;
       }
+      .spd {
+        max-width: 340px;
+        margin: 4px auto 0;
+        text-align: left;
+      }
+      .spd label {
+        margin-top: 8px;
+        font-size: 14px;
+        color: #c9b7a8;
+      }
+      .spdEnds {
+        display: flex;
+        justify-content: space-between;
+        font-size: 11px;
+        color: #6f7676;
+        margin-top: -2px;
+      }
       .lore {
         max-width: 480px;
         margin: 0 auto 14px;
@@ -415,6 +432,13 @@
         <div class="seg" id="jumpSeg">
           <button data-v="on">Jump the gaps</button>
           <button data-v="off">No jumping</button>
+        </div>
+        <div class="spd">
+          <label
+            >Walking speed <output id="o_speed"></output
+            ><input id="speed" type="range" min="0.5" max="3" step="0.1"
+          /></label>
+          <div class="spdEnds"><span>Slower</span><span>Faster</span></div>
         </div>
         <p class="how" id="how"></p>
         <button id="go">Begin</button>
@@ -601,6 +625,7 @@
         quality: "high",
         sens: 1,
         stride: 0.65,
+        speed: 1.5,
         lookWalk: true,
         hop: true,
         jump: true,
@@ -1396,6 +1421,7 @@
       const FOOT = 0.13;
       function supported(x, z) {
         if (z > 0.62) return Math.abs(x) < 18; // solid cliff
+        if (z > 0.15 && Math.abs(x) < 1.25) return true; // the landing between the cliff and the first plank
         if (!S.jump && Math.abs(x) < 0.32 && inHole(((-z % PER) + PER) % PER, 0.35)) return true; // boarded over
         const k0 = Math.round(-z / 0.5);
         for (let k = k0 - 1; k <= k0 + 1; k++) {
@@ -1646,6 +1672,12 @@
         const tree = new THREE.Mesh(merge(tp), barkM);
         tree.castShadow = tree.receiveShadow = true;
         scene.add(tree);
+        // timber landing where the bridge meets the cliff – no gap between rock and the first plank
+        {
+          const sill = new THREE.Mesh(merge([place(tbox(2.5, 0.09, 0.5, rk), 0, -0.015, 0.43), place(tbox(0.14, 0.14, 0.5, rk), -1.18, -0.02, 0.43), place(tbox(0.14, 0.14, 0.5, rk), 1.18, -0.02, 0.43)]), timberM);
+          sill.receiveShadow = sill.castShadow = true;
+          scene.add(sill);
+        }
         // warning sign
         const sp = merge([place(tbox(0.09, 1.5, 0.09), 0, 0.7, 0, 0, 0, 0.05), place(tbox(0.06, 1.2, 0.07), 0.38, 0.55, -0.02, 0.1, 0, -0.5)]);
         const post = new THREE.Mesh(sp, timberM);
@@ -3790,7 +3822,7 @@
       }
 
       /* ---- the director: escalating, scripted at first, then unpredictable ---- */
-      const DIR = { busy: false, omens: 0, si: 0, next: 18, minorT: 14, knocks: 0, batAt: -999, lockUntil: 0, carveI: 0, repAt: 290, travDone: false, retCarve: false };
+      const DIR = { busy: false, readyAt: 0, omens: 0, si: 0, next: 18, minorT: 14, knocks: 0, batAt: -999, lockUntil: 0, carveI: 0, repAt: 290, travDone: false, retCarve: false };
       const SCRIPT = [
         [18, "omen:reveal"],
         [42, "omen:rush"],
@@ -3842,7 +3874,7 @@
           DIR.minorT = rr(9, 20);
           if (!MIST.on && !CNT.on && TRV.st < 0) minorEvent();
         }
-        if (DIR.busy || air || trav < DIR.next) return;
+        if (DIR.busy || air || trav < DIR.next || nowMs() < DIR.readyAt) return;
         const scripted = DIR.si < SCRIPT.length,
           ev = scripted ? SCRIPT[DIR.si][1] : pickRandomEvent();
         if (!runEvent(ev)) {
@@ -3851,6 +3883,7 @@
           return;
         }
         if (scripted) DIR.si++;
+        DIR.readyAt = nowMs() + 9000;
         const nx = DIR.si < SCRIPT.length ? SCRIPT[DIR.si][0] : trav + rr(18, 30) * (trav > 400 ? 0.8 : 1);
         DIR.next = Math.max(nx, trav + 12);
       }
@@ -4167,13 +4200,16 @@
         }
         countStep();
         if (nowMs() < CRL.tapUntil) setTimeout(() => snd("knock", { pos: { x: B.x, y: -0.55, z: B.z - 0.15 }, vol: 0.85, rate: rr(0.75, 0.9) }), 280);
-        moveRem = Math.min(moveRem + S.stride, S.stride * 1.6);
+        moveRem = Math.min(moveRem + S.stride * S.speed, S.stride * 1.6 * S.speed);
         stepT = performance.now();
         stepS();
         if (inGapZ(B.z) && R() < 0.4) creak();
       }
       /* ---------- jumping, falling, respawning ---------- */
       let air = false,
+        jumpAir = false, // in the air because you jumped (vs. walked off an edge)
+        balX = 0,
+        balUntil = 0,
         pvy = 0,
         pyAbs = 0,
         jfx = 0,
@@ -4188,10 +4224,17 @@
         if (!S.jump || air || fallS || !started || ended || menuOn || calib || nowMs() < DIR.lockUntil) return;
         const f = fwd();
         air = true;
+        jumpAir = true;
         pvy = 3.15; // ~0.5 m high, ~0.65 s in the air
         SD.jumpT = performance.now();
-        jfx = f.x;
-        jfz = f.z;
+        if (B.z < 0.6 && Math.abs(f.z) > 0.5) {
+          // on the bridge, aim the jump along it: keep only a third of any sideways component
+          jfx = f.x * 0.35;
+          jfz = Math.sign(f.z) * Math.sqrt(1 - jfx * jfx);
+        } else {
+          jfx = f.x;
+          jfz = f.z;
+        }
         jspd = Math.max(vel, 3.2); // carries you ~2 m: take off anywhere within ~0.5 m of the edge
         vel = 0;
         moveRem = 0;
@@ -4441,7 +4484,9 @@
         voff: (v) => (v > 0 ? "+" : "") + v.toFixed(1) + " mm",
         sens: (v) => v.toFixed(2) + "×",
         stride: (v) => Math.round(v * 100) + " cm",
+        speed: (v) => v.toFixed(1) + "×" + (v < 0.85 ? " · slow" : v < 1.25 ? " · normal" : v < 1.95 ? " · brisk" : v < 2.55 ? " · fast" : " · running"),
       };
+      S.speed = cl(+S.speed || DEF.speed, 0.5, 3);
       const syncRange = (id) => {
         $(id).value = S[id];
         $("o_" + id).textContent = fmts[id](S[id]);
@@ -4741,7 +4786,7 @@
               if (!gp || !gp.axes) continue;
               const ay = gp.axes.length > 3 ? gp.axes[3] : gp.axes[1] || 0;
               if (ay < -0.45 && started && !ended) {
-                moveRem = Math.max(moveRem, 0.4);
+                moveRem = Math.max(moveRem, 0.4 * S.speed);
                 SD.cad = 1.9;
                 if (now - stepT > 520) {
                   stepT = now;
@@ -4751,7 +4796,7 @@
             }
         }
         if (now < DIR.lockUntil) moveRem = 0; // held in place
-        const tgt = moveRem > 0.02 && !air ? cl(S.stride * SD.cad, 0.7, 2.2) * (1 - 0.55 * mistK) : 0; // legs go heavy in the mist
+        const tgt = moveRem > 0.02 && !air ? cl(S.stride * SD.cad, 0.7, 2.2) * S.speed * (1 - 0.55 * mistK) : 0; // legs go heavy in the mist
         vel += (tgt - vel) * Math.min(1, dt * (tgt > vel ? 4 : 6));
         const d = air ? 0 : vel * dt;
         moveRem = Math.max(0, moveRem - d);
@@ -4787,8 +4832,10 @@
             ex = cl(B.x, -lim, lim) - B.x;
           P.x += ex * Math.min(1, dt * 8);
           B.x += ex * Math.min(1, dt * 8);
-          if (gz && walking && !air) {
-            const c = -B.x * Math.min(1, dt * 0.5); // a gentle nudge to stay on the narrow planks
+          // a nudge to stay on the narrow planks – starting a few metres before them, so you walk
+          // into the broken section in the middle; stronger at higher speeds
+          if ((gz || (B.z < 0 && lm > 22 && lm < 27.5)) && walking && !air) {
+            const c = -B.x * Math.min(1, dt * (gz ? 2.5 : 2.0) * Math.max(1, S.speed));
             P.x += c;
             B.x += c;
           }
@@ -4803,15 +4850,34 @@
           const gnd = deckY(B.z);
           if (air) {
             if (pvy <= 0 && pyAbs <= gnd) {
-              if (pyAbs > gnd - 0.35 && supported(B.x, B.z)) land(); // catching the far edge counts
+              const xin = cl(B.x, -0.28, 0.28),
+                tol = jumpAir ? 0.35 : 0.12; // a jump can catch the far edge; just walking off can't
+              if (pyAbs > gnd - tol && supported(B.x, B.z)) land(); // catching the far edge counts
+              else if (jumpAir && pyAbs > gnd - tol && Math.abs(B.x) < 1.0 && supported(xin, B.z)) {
+                // landed on the very edge of a narrow plank: you catch your balance and slide onto it
+                balX = xin;
+                balUntil = nowMs() + 400;
+                land();
+              }
               else if (pyAbs < gnd - 0.7) startFall();
             }
+          } else if (nowMs() < balUntil) {
+            // catching your balance after a landing on a plank's edge: ease onto it (no snap in VR)
+            const c = (balX - B.x) * Math.min(1, dt * 12);
+            P.x += c;
+            B.x += c;
+            coyote = 0;
+            pyAbs = gnd;
           } else if (!supported(B.x, B.z)) {
-            coyote += dt;
+            const fa = fwd();
+            // a crack you can step across (wood within a stride ahead) doesn't drop you
+            if (supported(B.x + fa.x * 0.42, B.z + fa.z * 0.42)) coyote = 0;
+            else coyote += dt;
             if (coyote > 0.09) {
               // walked off an edge: drop, still drifting the way you were going
               const f = fwd();
               air = true;
+              jumpAir = false;
               pvy = 0;
               jfx = f.x;
               jfz = f.z;
